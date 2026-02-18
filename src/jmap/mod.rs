@@ -11,6 +11,45 @@ use tracing::{debug, instrument};
 const SESSION_URL: &str = "https://api.fastmail.com/jmap/session";
 const TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Trusted Fastmail domain suffixes for URL validation.
+/// All URLs from the JMAP session response must be on one of these domains
+/// to prevent token/email exfiltration via a tampered session response.
+const TRUSTED_DOMAINS: &[&str] = &[".fastmail.com", ".fastmailusercontent.com"];
+
+/// Validate that a URL points to a trusted Fastmail domain.
+/// Returns an error if the URL is not HTTPS or the host is not a trusted domain.
+fn validate_fastmail_url(url: &str, field_name: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| Error::Config(
+        format!("{} is not a valid URL: {} ({})", field_name, url, e),
+    ))?;
+
+    if parsed.scheme() != "https" {
+        return Err(Error::Config(format!(
+            "{} must use HTTPS: {}",
+            field_name, url
+        )));
+    }
+
+    let host = parsed.host_str().ok_or_else(|| {
+        Error::Config(format!("{} has no host: {}", field_name, url))
+    })?;
+
+    let host_lower = host.to_lowercase();
+    let is_trusted = TRUSTED_DOMAINS.iter().any(|domain| {
+        host_lower == domain.trim_start_matches('.')
+            || host_lower.ends_with(domain)
+    });
+
+    if !is_trusted {
+        return Err(Error::Config(format!(
+            "{} points to untrusted domain '{}': {}",
+            field_name, host, url
+        )));
+    }
+
+    Ok(())
+}
+
 const CAPABILITIES: &[&str] = &[
     "urn:ietf:params:jmap:core",
     "urn:ietf:params:jmap:mail",
@@ -112,6 +151,13 @@ impl JmapClient {
 
         let session: Session = resp.json().await?;
         debug!(username = %session.username, "Session established");
+
+        // Validate that session URLs point to trusted Fastmail domains
+        // to prevent token/email exfiltration via a tampered session response.
+        validate_fastmail_url(&session.api_url, "apiUrl")?;
+        validate_fastmail_url(&session.download_url, "downloadUrl")?;
+        validate_fastmail_url(&session.upload_url, "uploadUrl")?;
+
         self.session = Some(session);
         Ok(self.session.as_ref().unwrap())
     }
@@ -1320,5 +1366,56 @@ impl JmapClient {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_fastmail_url_valid() {
+        assert!(validate_fastmail_url("https://api.fastmail.com/jmap/api", "apiUrl").is_ok());
+        assert!(validate_fastmail_url("https://fastmail.com/path", "apiUrl").is_ok());
+        assert!(validate_fastmail_url(
+            "https://www.fastmailusercontent.com/download",
+            "downloadUrl"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_validate_fastmail_url_rejects_http() {
+        let result = validate_fastmail_url("http://api.fastmail.com/jmap/api", "apiUrl");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("HTTPS"));
+    }
+
+    #[test]
+    fn test_validate_fastmail_url_rejects_untrusted_domain() {
+        let result = validate_fastmail_url("https://evil.com/jmap/api", "apiUrl");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("untrusted domain"));
+    }
+
+    #[test]
+    fn test_validate_fastmail_url_rejects_subdomain_trick() {
+        // fastmail.com.evil.com should NOT be trusted
+        let result =
+            validate_fastmail_url("https://fastmail.com.evil.com/jmap/api", "apiUrl");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("untrusted domain"));
+    }
+
+    #[test]
+    fn test_validate_fastmail_url_rejects_missing_host() {
+        let result = validate_fastmail_url("https:///path", "apiUrl");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_fastmail_url_rejects_invalid_url() {
+        let result = validate_fastmail_url("not-a-url", "apiUrl");
+        assert!(result.is_err());
     }
 }
