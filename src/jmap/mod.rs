@@ -30,14 +30,17 @@ fn validate_fastmail_url(url: &str, field_name: &str) -> Result<()> {
         )));
     }
 
-    let host = parsed.host_str().ok_or_else(|| {
-        Error::Config(format!("{} has no host: {}", field_name, url))
-    })?;
+    let host = parsed.host_str()
+        .filter(|h| !h.is_empty())
+        .ok_or_else(|| {
+            Error::Config(format!("{} has no host: {}", field_name, url))
+        })?;
 
     let host_lower = host.to_lowercase();
     let is_trusted = TRUSTED_DOMAINS.iter().any(|domain| {
-        host_lower == domain.trim_start_matches('.')
-            || host_lower.ends_with(domain)
+        let bare_domain = domain.trim_start_matches('.');
+        // Exact match (e.g., "fastmail.com") or proper subdomain (e.g., "api.fastmail.com")
+        host_lower == bare_domain || host_lower.ends_with(&format!(".{}", bare_domain))
     });
 
     if !is_trusted {
@@ -1408,7 +1411,16 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_fastmail_url_rejects_suffix_trick() {
+        // notfastmail.com should NOT be trusted (no dot boundary)
+        let result = validate_fastmail_url("https://notfastmail.com/jmap/api", "apiUrl");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("untrusted domain"));
+    }
+
+    #[test]
     fn test_validate_fastmail_url_rejects_missing_host() {
+        // URLs with no host should be rejected (either as invalid or untrusted)
         let result = validate_fastmail_url("https:///path", "apiUrl");
         assert!(result.is_err());
     }
