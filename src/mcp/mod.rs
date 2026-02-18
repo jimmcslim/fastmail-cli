@@ -483,6 +483,13 @@ impl FastmailMcp {
             ));
         }
 
+        if req.action != "confirm" {
+            return Self::error_result(format!(
+                "Invalid action: '{}'. Use 'preview' to review first, then 'confirm' to proceed.",
+                req.action
+            ));
+        }
+
         match client.mark_spam(&req.email_id).await {
             Ok(()) => Self::text_result(format!(
                 "Marked as spam: \"{}\" from {}",
@@ -535,6 +542,13 @@ impl FastmailMcp {
                 },
                 req.subject,
                 req.body
+            ));
+        }
+
+        if req.action != "confirm" {
+            return Self::error_result(format!(
+                "Invalid action: '{}'. Use 'preview' to review the email first, then 'confirm' to send.",
+                req.action
             ));
         }
 
@@ -630,6 +644,13 @@ impl FastmailMcp {
                     .and_then(|v| v.first())
                     .unwrap_or(&"(none)".to_string()),
                 req.body
+            ));
+        }
+
+        if req.action != "confirm" {
+            return Self::error_result(format!(
+                "Invalid action: '{}'. Use 'preview' to review the reply first, then 'confirm' to send.",
+                req.action
             ));
         }
 
@@ -730,6 +751,13 @@ impl FastmailMcp {
                 original.received_at.as_deref().unwrap_or("unknown date"),
                 original.subject.as_deref().unwrap_or(""),
                 original_body
+            ));
+        }
+
+        if req.action != "confirm" {
+            return Self::error_result(format!(
+                "Invalid action: '{}'. Use 'preview' to review the forward first, then 'confirm' to send.",
+                req.action
             ));
         }
 
